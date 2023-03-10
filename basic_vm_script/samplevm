@@ -18,21 +18,28 @@ readonly vm_name="samplevm"
 kldload -n vmm.ko
 
 while true; do
-	# destroy former VM instance to ensure we start
-	# with a clean VM configuration
-	if test -e "/dev/vmm/${vm_name}"; then
-		bhyvectl --vm="${vm_name}" --destroy
-	fi
+	nic="igb1" 
+        tap="$(doas ifconfig tap create)"
+	bridge="$(doas ifconfig bridge create)"
+	doas sysctl net.link.tap.up_on_open=1
+	doas ifconfig ${bridge} addm ${tap} addm ${nic} up
+	doas sysctl net.link.bridge.pfil_member=0
+
 
 	# start a simple UEFI based VM instance
 	_bhyve_rc=0
 	bhyve \
 		-A -H -P \
-		-c sockets=1,cores=1,threads=1 \
-		-m 1G \
+		-c 2 \
+		-m 2G \
 		-s 0:0,hostbridge \
-		-l bootrom,/usr/local/share/uefi-firmware/BHYVE_BHF_UEFI.fd \
-		-l com1,stdio \
+		-s 1:0,virtio-blk,/dev/zvol/"${vm_disk}" \
+		-s 2:0,virtio-net,"${tap}" \
+		-s 3:0,virtio-net,"${nettap}" \
+		-s 10:0,ahci-cd,"${iso_file}" \
+		-l bootrom,/usr/local/share/uefi-firmware/BHYVE_BHF_UEFI.fd,"${efi_vars}" \
+		-s 29,fbuf,tcp=0.0.0.0:"${vnc_port}",w=1024,h=768,wait \
+		-s 30,xhci,tablet \
 		-s 31:0,lpc \
 		"${vm_name}"
 	_bhyve_rc=$?
@@ -45,6 +52,13 @@ while true; do
 		printf "bhyve exited with return code: %s\n" "${_bhyve_rc}"
 		break
 	fi
+	
+	#remove the networking ports
+	doas ifconfig ${bridge} deletem ${tap} deletem ${nic}
+	doas ifconfig ${bridge} down
+	doas ifconfig ${bridge} destroy
+	doas ifconfig ${tap} destroy
+	
 	printf "Restarting %s\n" "${vm_name}"
 
 done
