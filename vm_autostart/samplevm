@@ -42,11 +42,23 @@ cleanup() {
 prepare_host() {
 	# Ensure that kernel modul vmm.ko is loaded
 	kldload -n vmm.ko
-
+	
+	#use existing disk
+	vm_disk="zroot/ubuntu-vm_disk0"
+	
 	# accept incoming VNC connections
 	temp_firewall_rules="/etc/pf.conf.d/${vm_name}"
 	printf "pass in quick proto tcp to port %s\n" "${vm_vnc_port}" > "${temp_firewall_rules}"
 	pfctl -a bhf/bhyve/"${vm_name}" -f "${temp_firewall_rules}"
+	
+	#configure networking
+	nic="igb1" 
+	tap="$(doas ifconfig tap create)"
+	bridge="$(doas ifconfig bridge create)"
+	doas sysctl net.link.tap.up_on_open=1
+	doas ifconfig ${bridge} addm ${tap} addm ${nic} up
+	doas sysctl net.link.bridge.pfil_member=0
+
 }
 
 # Setups the VM environment and actually executes the bhyve process
@@ -57,25 +69,29 @@ run_vm() {
 
 	while true; do
 
-		if test -e "/dev/vmm/${vm_name}"; then
-			bhyvectl --vm="${vm_name}" --destroy
-		fi
-
+		
 		_bhyve_rc=0
 		bhyve \
-			-A -H -P -w \
-			-c sockets=1,cores=1,threads=1 \
+			-A -H -P -S \
+			-c 2 \
 			-m 2G \
 			-l bootrom,/usr/local/share/uefi-firmware/BHYVE_BHF_UEFI.fd \
 			-s 0,hostbridge \
-			-s 2,fbuf,rfb=0.0.0.0:"${vm_vnc_port}",w=1280,h=1024 \
-			-s 3,xhci,tablet \
+			-s 10:0,ahci-cd,"${iso_file}" 
+			-s 29,fbuf,tcp=0.0.0.0:"$vm_{vnc_port}",w=1024,h=768,wait \
+			-s 30,xhci,tablet \
 			-s 31,lpc \
 			"${vm_name}" || _bhyve_rc=$?
 
 		if test "${_bhyve_rc}" -ne 0; then
 			break
 		fi
+		
+		#remove networking at the end
+		doas ifconfig ${bridge} deletem ${tap} deletem ${nic}
+		doas ifconfig ${bridge} down
+		doas ifconfig ${bridge} destroy
+		doas ifconfig ${tap} destroy
 
 	done
 }
